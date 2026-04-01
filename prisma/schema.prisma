@@ -11,3 +11,121 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum SourceType {
+  AVITO
+  VK
+}
+
+enum PropertyStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Source {
+  id        String     @id @default(uuid())
+  key       String
+  type      SourceType
+  listings  Listing[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([type, key])
+}
+
+/// Объект недвижимости — агрегирует объявления из разных источников
+model Property {
+  id        String         @id @default(uuid())
+  status    PropertyStatus
+  listings  Listing[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
+/// Объявление из конкретного источника
+model Listing {
+  id String @id @default(uuid())
+
+  sourceId String
+  source   Source @relation(fields: [sourceId], references: [id])
+
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id])
+
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id])
+
+  externalId  String
+  externalUrl String
+
+  description String   @db.Text
+  images      String[]
+  postedAt    DateTime
+
+  /// Арендная плата в рублях в месяц
+  rent       Int
+  /// Залог в рублях. null = не указан
+  deposit    Int?
+  /// Комиссия агента в рублях. null = не указана
+  commission Int?
+
+  /// Фиксированная сумма ЖКУ в рублях. null = не указана
+  utilityAmount   Int?
+  /// true = ЖКУ включены в стоимость аренды
+  utilityIncluded Boolean?
+  /// true = арендатор платит по счётчикам (свет, вода), false = владелец
+  utilityCounters Boolean?
+
+  rooms       Int?
+  area        Float?
+  floor       Int?
+  totalFloors Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([sourceId, externalId])
+}
+
+model Location {
+  id String @id @default(uuid())
+
+  /// null если координаты не попали ни в один полигон района
+  /// (пригород, граница города, неполные данные по районам)
+  districtId String?
+  district   District? @relation(fields: [districtId], references: [id])
+
+  /// Полный адрес используется как ключ дедупликации
+  fullAddress String @unique
+  city        String
+  address     String
+  lon         Float
+  lat         Float
+
+  listings Listing[]
+
+  /// Для радиусного поиска рекомендуется PostGIS, текущий индекс — базовая оптимизация
+  @@index([lon, lat])
+  @@index([city])
+}
+
+/// Административный район города с GeoJSON геометрией
+model District {
+  id String @id /// OSM relation id, например "relation/15592592"
+
+  name String
+  slug String
+  city String
+
+  /// Центр района: [lng, lat]
+  center   Json
+  /// GeoJSON Polygon или MultiPolygon
+  geometry Json
+
+  locations Location[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@unique([city, slug])
+  @@index([city])
+}

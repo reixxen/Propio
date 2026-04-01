@@ -1,0 +1,55 @@
+import { sourceService } from '@/services/source.service'
+import { inngest } from '../client'
+import { SourceType } from '@/generated/prisma/enums'
+import { NonRetriableError } from 'inngest'
+import { AvitoAdapter } from '@/integration/avito/adapter'
+import { AvitoClient } from '@/integration/avito/client'
+import { listingReceived } from '../events'
+import { AvitoScrapper } from '@/integration/avito/scrapper'
+
+const AVITO_URL =
+  'https://www.avito.ru/magnitogorsk/kvartiry/sdam/na_dlitelnyy_srok-ASgBAgICAkSSA8gQ8AeQUg?cd=1'
+
+const AVITO_COOKIES = {
+  f: '5.fd3fbe8b0553319ac1c3cf21d33666d74f0aa6d4f7157ca44f0aa6d4f7157ca44f0aa6d4f7157ca44f0aa6d4f7157ca42668c76b1faaa3582668c76b1faaa3582668c76b1faaa3584f0aa6d4f7157ca402b7af2c19f2d05c02b7af2c19f2d05c0df103df0c26013a0df103df0c26013a2ebf3cb6fd35a0ac7b0d53c7afc06d0b28a353c4323c7a3a3f5003b9de26797bf03bdfa0d1f878520f7bd04ea141548c956cdff3d4067aa5ff38e8d292af81e52ebf3cb6fd35a0ac2ebf3cb6fd35a0ac71e7cb57bbcb8e0ff0c77052689da50ddc5322845a0cba1aba0ac8037e2b74f92da10fb74cac1eab2da10fb74cac1eab2da10fb74cac1eabdc5322845a0cba1a0df103df0c26013a037e1fbb3ea05095de87ad3b397f946b4c41e97fe93686ad07c9c7dff633a1f94c6e394c5c3afe8d02c730c0109b9fbb03a46262b95f2006910240fdfd1df9fa006a33751a41e1dbf72316305726b23530c4db039d665204e2415097439d404746b8ae4e81acb9fa786047a80c779d5146b8ae4e81acb9fa29f01eeedc7b8532b6c9122eda0b0e572da10fb74cac1eaba5f76aa56199c549efde06a8e6b1dd6fbd328d963d19988140772fae243a9e18',
+  ft: '"4mHAd24eeoNOggpqtPQAq4xeGmDvz5F2tVj/P9+YqlUiH4ycyiy+v185A84q/gv6psIBq+ZS+V3cQb3TFRl4ZAt6gmTTfaz9zi31PHBCJdDfX3bkt7Kz9DS2HsfASiIM10dWdqM39d+tfqCAF8f5jw=="',
+}
+
+const avitoClient = new AvitoClient()
+const avitoScrapper = new AvitoScrapper(avitoClient, AVITO_COOKIES)
+const avitoAdapter = new AvitoAdapter(avitoScrapper)
+
+export const syncAvito = inngest.createFunction(
+  {
+    id: 'sync-avito',
+    triggers: [{ cron: '*/60 * * * *' }],
+  },
+  async ({ step }) => {
+    const source = await step.run('find-source', async () => {
+      return await sourceService.findByTypeAndKey(SourceType.AVITO, 'avito')
+    })
+
+    if (!source) {
+      throw new NonRetriableError('Source not found')
+    }
+
+    const result = await step.run('fetch-listings', async () => {
+      return await avitoAdapter.fetchListings(AVITO_URL)
+    })
+
+    const events = result.listings.map((listing) => {
+      return listingReceived.create({
+        sourceId: source.id,
+        listing: listing,
+      })
+    })
+
+    const { ids } = await step.sendEvent('send-listing-created-events', events)
+
+    return {
+      count: result.listings.length,
+      eventIds: ids,
+      errors: result.errors,
+    }
+  }
+)
